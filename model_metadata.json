@@ -1,0 +1,35 @@
+{
+  "selected_model": "ConvNeXtTiny Fine-Tuned",
+  "image_size": [
+    224,
+    224
+  ],
+  "input_scale_mode": "zero_255",
+  "class_names": [
+    "BABY_PRODUCTS",
+    "BEAUTY_HEALTH",
+    "CLOTHING_ACCESSORIES_JEWELLERY",
+    "ELECTRONICS",
+    "GROCERY",
+    "HOBBY_ARTS_STATIONERY",
+    "HOME_KITCHEN_TOOLS",
+    "PET_SUPPLIES",
+    "SPORTS_OUTDOOR"
+  ],
+  "selected_metrics": {
+    "Model": "ConvNeXtTiny Fine-Tuned",
+    "Test Loss": 0.7596416473388672,
+    "Test Accuracy": 0.7494365138993239,
+    "Macro Precision": 0.7335625270413696,
+    "Macro Recall": 0.7365083569464049,
+    "Macro F1 Score": 0.7335539403200779,
+    "Weighted Precision": 0.7526000716000689,
+    "Weighted Recall": 0.7494365138993239,
+    "Weighted F1 Score": 0.7497670862832084,
+    "Top 3 Accuracy": 0.9391435011269722,
+    "Training Time Seconds": 2981.190812110901,
+    "Inference Time ms per Image": 114.49381261081896,
+    "Parameter Count": 27828585,
+    "Model Size MB": 233.91667938232425
+  }
+}
