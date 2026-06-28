@@ -4,7 +4,7 @@ import json
 import numpy as np
 import streamlit as st
 import tensorflow as tf
-from PIL import Image, ImageOps
+from PIL import Image
 
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "best_deployment_model.keras"
@@ -23,7 +23,6 @@ def load_model_and_config():
         config = json.load(file)
 
     model = tf.keras.models.load_model(MODEL_PATH)
-
     return model, config
 
 
@@ -34,7 +33,7 @@ def prepare_image(image, config):
 
     image_array = np.array(
         resized_image,
-        dtype=np.float32,
+        dtype=np.float32
     )
 
     if config.get("input_scale_mode") == "zero_one":
@@ -43,38 +42,75 @@ def prepare_image(image, config):
     return np.expand_dims(image_array, axis=0)
 
 
-def make_gradcam_heatmap(model, input_batch, predicted_index):
+def build_gradcam_model(model):
+    """
+    Rebuilds the ConvNeXt feature path from a fresh input tensor.
+    This avoids the disconnected-graph error from the saved nested model.
+    """
+    gradcam_input = tf.keras.Input(
+        shape=model.input_shape[1:],
+        name="gradcam_input"
+    )
+
+    augmentation = model.get_layer("convnext_augmentation")
     backbone = model.get_layer("convnext_tiny")
 
-    grad_model = tf.keras.models.Model(
-        inputs=model.inputs,
-        outputs=[backbone.output, model.output],
+    x = augmentation(gradcam_input, training=False)
+    conv_features = backbone(x, training=False)
+
+    backbone_index = model.layers.index(backbone)
+    head_output = conv_features
+
+    for layer in model.layers[backbone_index + 1:]:
+        if isinstance(
+            layer,
+            (
+                tf.keras.layers.Dropout,
+                tf.keras.layers.BatchNormalization,
+            ),
+        ):
+            head_output = layer(head_output, training=False)
+        else:
+            head_output = layer(head_output)
+
+    return tf.keras.Model(
+        inputs=gradcam_input,
+        outputs=[conv_features, head_output],
+        name="gradcam_model"
     )
 
+
+@st.cache_resource
+def load_gradcam_model():
+    model, _ = load_model_and_config()
+    return build_gradcam_model(model)
+
+
+def make_gradcam_heatmap(
+    gradcam_model,
+    input_batch,
+    predicted_index
+):
     with tf.GradientTape() as tape:
-        convolution_output, predictions = grad_model(
+        conv_features, predictions = gradcam_model(
             input_batch,
-            training=False,
+            training=False
         )
 
-        selected_class_score = predictions[:, predicted_index]
+        selected_score = predictions[:, predicted_index]
 
-    gradients = tape.gradient(
-        selected_class_score,
-        convolution_output,
-    )
+    gradients = tape.gradient(selected_score, conv_features)
 
     pooled_gradients = tf.reduce_mean(
         gradients,
-        axis=(0, 1, 2),
+        axis=(0, 1, 2)
     )
 
-    convolution_output = convolution_output[0]
+    conv_features = conv_features[0]
 
-    heatmap = tf.tensordot(
-        convolution_output,
-        pooled_gradients,
-        axes=([2], [0]),
+    heatmap = tf.reduce_sum(
+        conv_features * pooled_gradients,
+        axis=-1
     )
 
     heatmap = tf.maximum(heatmap, 0)
@@ -87,36 +123,36 @@ def make_gradcam_heatmap(model, input_batch, predicted_index):
 
 
 def create_gradcam_overlay(original_image, heatmap):
+    base_image = original_image.convert("RGBA")
+
     heatmap_image = Image.fromarray(
         np.uint8(255 * heatmap)
-    ).resize(original_image.size)
-
-    colored_heatmap = ImageOps.colorize(
-        heatmap_image,
-        black="black",
-        white="red",
-    )
-
-    original_array = np.array(
-        original_image.convert("RGB"),
-        dtype=np.float32,
+    ).resize(
+        base_image.size,
+        Image.Resampling.BILINEAR
     )
 
     heatmap_array = np.array(
-        colored_heatmap.convert("RGB"),
-        dtype=np.float32,
+        heatmap_image,
+        dtype=np.float32
+    ) / 255.0
+
+    red_overlay = Image.new(
+        "RGBA",
+        base_image.size,
+        (255, 0, 0, 0)
     )
 
-    overlay_array = np.uint8(
-        np.clip(
-            0.60 * original_array
-            + 0.40 * heatmap_array,
-            0,
-            255,
-        )
+    alpha_mask = Image.fromarray(
+        np.uint8(heatmap_array * 155)
     )
 
-    return Image.fromarray(overlay_array)
+    red_overlay.putalpha(alpha_mask)
+
+    return Image.alpha_composite(
+        base_image,
+        red_overlay
+    ).convert("RGB")
 
 
 model, config = load_model_and_config()
@@ -130,7 +166,7 @@ st.write(
 
 uploaded_file = st.file_uploader(
     "Upload a product image",
-    type=["jpg", "jpeg", "png", "webp"],
+    type=["jpg", "jpeg", "png", "webp"]
 )
 
 if uploaded_file is not None:
@@ -139,14 +175,14 @@ if uploaded_file is not None:
     st.image(
         uploaded_image,
         caption="Uploaded image",
-        use_container_width=True,
+        use_container_width=True
     )
 
     input_batch = prepare_image(uploaded_image, config)
 
     probabilities = model.predict(
         input_batch,
-        verbose=0,
+        verbose=0
     )[0]
 
     top_indices = np.argsort(probabilities)[-3:][::-1]
@@ -166,38 +202,45 @@ if uploaded_file is not None:
     st.subheader("Top 3 Predictions")
 
     for index in top_indices:
+        category_name = (
+            config["class_names"][int(index)]
+            .replace("_", " ")
+            .title()
+        )
+
         st.write(
-            f"- {config['class_names'][int(index)].replace('_', ' ').title()}: "
+            f"- {category_name}: "
             f"{float(probabilities[int(index)]):.2%}"
         )
 
     st.subheader("Grad-CAM Explanation")
 
     try:
+        gradcam_model = load_gradcam_model()
+
         heatmap = make_gradcam_heatmap(
-            model,
+            gradcam_model,
             input_batch,
-            predicted_index,
+            predicted_index
         )
 
         overlay_image = create_gradcam_overlay(
             uploaded_image,
-            heatmap,
+            heatmap
         )
 
         st.image(
             overlay_image,
             caption=(
-                "Grad-CAM overlay. Brighter red regions indicate "
-                "image areas that contributed more strongly to the "
-                "predicted category."
+                "Grad-CAM overlay. Brighter red regions contributed "
+                "more strongly to the predicted category."
             ),
-            use_container_width=True,
+            use_container_width=True
         )
 
         st.info(
-            "Grad-CAM is used to visualise which image regions "
-            "most influenced the final ConvNeXtTiny prediction."
+            "Grad-CAM highlights image regions that most influenced "
+            "the final ConvNeXtTiny prediction."
         )
 
     except Exception as error:
@@ -205,5 +248,4 @@ if uploaded_file is not None:
             "The product prediction succeeded, but the Grad-CAM "
             "visualisation could not be generated."
         )
-
         st.code(str(error))
